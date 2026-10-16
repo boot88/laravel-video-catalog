@@ -30,8 +30,8 @@ PHP 8.2+, Laravel 12, Eloquent, Blade, JavaScript, Vite, FFmpeg и GD.
 ## Подготовка локального окружения
 
 ```bash
-git clone https://github.com/boot88/VideoHosting.git
-cd VideoHosting
+git clone https://github.com/boot88/laravel-video-catalog.git
+cd laravel-video-catalog
 composer install
 cp .env.example .env
 php artisan key:generate
