@@ -13,11 +13,11 @@ return new class extends Migration
     {
         Schema::table('videos', function (Blueprint $table) {
             //
-$table->string('category')->default('editorial');
-        $table->index('category');        
+            $table->string('category')->default('editorial');
+            $table->index('category');
 
-});
-        
+        });
+
     }
 
     /**
@@ -27,9 +27,9 @@ $table->string('category')->default('editorial');
     {
         Schema::table('videos', function (Blueprint $table) {
             //
-         $table->dropIndex(['category']);
-        $table->dropColumn('category');
+            $table->dropIndex(['category']);
+            $table->dropColumn('category');
         });
-       
+
     }
 };

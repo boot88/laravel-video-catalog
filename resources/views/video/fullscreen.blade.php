@@ -55,7 +55,7 @@
     <div class="fullscreen-player">
         <button class="back-btn" onclick="window.history.back()">← Назад</button>
         <video id="fullscreenVideo" controls autoplay>
-            <source src="{{ $video->video_url }}" type="video/mp4">
+            <source src="{{ $video->video_url }}" type="{{ $video->mime_type }}">
             Ваш браузер не поддерживает видео.
         </video>
     </div>
