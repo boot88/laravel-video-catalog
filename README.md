@@ -57,10 +57,81 @@ If you discover a security vulnerability within Laravel, please send an e-mail t
 ## License
 
 The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+
+---
+
 # VideoHosting
 
+Витрина видео: категории, превью из кадра (ffmpeg), лайки, комментарии.
 
+## Запуск
 
-#php artisan migrate
-#php artisan db:seed --class=VideoSeeder
-#php artisan video:generate-thumbnails --all
+```bash
+php artisan serve    # http://127.0.0.1:8000
+# либо всё сразу (web + queue + vite):
+composer dev
+```
+
+Первичная установка: `composer install && npm install`, скопировать `.env.example`
+в `.env`, `php artisan key:generate`, `php artisan migrate`, `php artisan storage:link`
+(без символической ссылки все `/storage/*` отдают 403).
+
+## Как добавить видео
+
+Единственный способ — команда `videos:import`: она читает файлы из папки,
+переносит их в `storage/app/public/videos`, заполняет запись в БД (длительность
+и качество через ffprobe) и создаёт превью из кадра видео.
+
+1. Положить файлы в папку категории — `public/images/import/<категория>`:
+
+```bash
+mkdir -p public/images/import/blondinki
+cp ~/видео/*.mp4 public/images/import/blondinki/
+```
+
+2. Запустить импорт:
+
+```bash
+php artisan videos:import blondinki            # категория = имя папки
+php artisan videos:import                      # все папки внутри public/images/import
+php artisan videos:import "блондинки" --category="Блондинки"
+php artisan videos:import blondinki --dry-run  # показать план, ничего не менять
+php artisan videos:import blondinki --copy     # оставить оригиналы в папке
+php artisan videos:import blondinki --force    # обновить уже добавленные
+php artisan videos:import blondinki --limit=10 # только первые 10 файлов
+php artisan videos:import blondinki --views=5000  # стартовые просмотры (позиция на главной)
+```
+
+По умолчанию файлы **переносятся** в `storage/app/public/videos` (папка-инбокс
+после импорта пустеет — так файлы не дублируются и не лежат в `public`). Имя файла
+транслитерируется: «блондинка 1.mp4» → `blondinka-1.mp4`, заголовок → «Блондинка 1».
+Повторный запуск ничего не дублирует: файлы, уже добавленные в базу, пропускаются
+(по имени файла), для перезаписи нужен `--force`.
+
+> Имя файла в `storage/app/public/videos` — идентификатор видео (по нему строится
+> ссылка и ищется запись). Если одинаковые имена встречаются в разных папках,
+> второй файл получает суффикс категории: `m2-res_1920p.mp4` →
+> `m2-res-1920p-runway.mp4`, поэтому оба видео импортируются, а не «съедают»
+> друг друга.
+
+3. Превью генерируются сразу. Если импорт был с `--skip-thumbnails`, догенерировать:
+
+```bash
+php artisan videos:generate-thumbnails          # только те, у кого нет настоящего превью
+php artisan videos:generate-thumbnails --force --limit=100
+```
+
+Сортировка главной — по колонке `rating` (= views + likes + комментарии), поэтому
+новые видео с `views=0` оказываются в конце списка. Чтобы они были наверху,
+импортируйте с `--views=5000` (или накрутите просмотры/лайки на сайте).
+
+> ⚠️ `php artisan db:seed` / `migrate:fresh --seed` вызовет `VideoSeeder`: он
+> очищает таблицы и создаёт 160 демо-записей, использующих 4 реальных файла из
+> `storage/app/public/videos`. Для реального контента используйте `videos:import`.
+
+## Проверка
+
+```bash
+php artisan test
+```
+

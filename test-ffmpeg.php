@@ -1,100 +1,57 @@
 <?php
-// test-thumbnail.php
-require __DIR__ . '/vendor/autoload.php';
 
-$app = require_once __DIR__ . '/bootstrap/app.php';
+/**
+ * Диагностика генерации превью (ручной запуск: php test-ffmpeg.php).
+ * Раньше здесь были захардкожены Windows-пути и -ss стоял после -i;
+ * теперь используется тот же код, что и приложение.
+ */
+
+require __DIR__.'/vendor/autoload.php';
+
+$app = require_once __DIR__.'/bootstrap/app.php';
 $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
 
-use Illuminate\Support\Facades\Log;
 use App\Models\Video;
+use App\Services\VideoThumbnailService;
 
-echo "Testing thumbnail generation...\n\n";
+echo "Проверка ffmpeg и генерации превью\n";
+echo str_repeat('=', 40), "\n";
 
-// Берем первое видео
-$video = Video::first();
+$binary = VideoThumbnailService::ffmpegBinary();
+echo 'ffmpeg: ', $binary ?? '❌ не найден (задайте FFMPEG_BINARIES в .env)', "\n";
 
-if (!$video) {
-    die("No videos found in database!\n");
+if ($binary !== null) {
+    echo '  версия: ', trim((string) shell_exec(escapeshellarg($binary).' -version 2>&1 | head -1')), "\n";
 }
 
-echo "Video ID: {$video->id}\n";
-echo "Title: {$video->title}\n";
-echo "Filename: {$video->filename}\n";
-echo "Current thumbnail: {$video->thumbnail}\n";
+echo 'кадр берётся с секунды: ', (int) config('ffmpeg.thumbnail_second', 10), "\n\n";
 
-$videoPath = storage_path('app/public/videos/' . $video->filename);
-echo "\nVideo path: {$videoPath}\n";
-echo "Video exists: " . (file_exists($videoPath) ? "✅ Yes" : "❌ No") . "\n";
+$video = Video::query()->select(['id', 'title', 'filename', 'thumbnail'])->first();
 
-if (!file_exists($videoPath)) {
-    die("Video file not found!\n");
+if (! $video) {
+    exit("В базе нет видео.\n");
 }
 
-// Путь к ffmpeg
-$ffmpegPath = 'C:\Soz\laragon\bin\ffmpeg\bin\ffmpeg.exe';
-echo "\nFFMPEG path: {$ffmpegPath}\n";
-echo "FFMPEG exists: " . (file_exists($ffmpegPath) ? "✅ Yes" : "❌ No") . "\n";
+$videoPath = storage_path('app/public/videos/'.$video->filename);
 
-// Тестовый путь для превью
-$testThumbnail = storage_path('app/public/thumbnails/debug_test.jpg');
-$thumbDir = dirname($testThumbnail);
+echo "Видео: #{$video->id} {$video->title}\n";
+echo "Файл: {$videoPath} — ", (is_file($videoPath) ? '✅ есть' : '❌ нет (будет создана цветная заглушка)'), "\n";
 
-echo "\nThumbnail dir: {$thumbDir}\n";
-echo "Thumbnail dir exists: " . (file_exists($thumbDir) ? "✅ Yes" : "❌ No") . "\n";
-echo "Thumbnail dir writable: " . (is_writable($thumbDir) ? "✅ Yes" : "❌ No") . "\n";
+$started = microtime(true);
+$ok = VideoThumbnailService::generateThumbnail($video);
+$elapsed = round((microtime(true) - $started) * 1000);
 
-if (!file_exists($thumbDir)) {
-    mkdir($thumbDir, 0755, true);
-    echo "Created thumbnail directory\n";
-}
+echo $ok ? '✅ Превью создано' : '❌ Превью не создано', " за {$elapsed} мс\n";
 
-// Команда для теста
-$videoPath = str_replace('/', '\\', $videoPath);
-$testThumbnail = str_replace('/', '\\', $testThumbnail);
+$thumbnailPath = $video->thumbnail ? storage_path('app/public/'.$video->thumbnail) : null;
 
-$command = "\"{$ffmpegPath}\" -i \"{$videoPath}\" -ss 00:00:10 -vframes 1 -q:v 2 \"{$testThumbnail}\" 2>&1";
+if ($thumbnailPath && is_file($thumbnailPath)) {
+    $info = @getimagesize($thumbnailPath);
+    echo 'Файл: ', $video->thumbnail, ' (', round(filesize($thumbnailPath) / 1024, 1), " КБ)\n";
 
-echo "\nCommand:\n{$command}\n\n";
-
-echo "Executing command...\n";
-$output = shell_exec($command);
-echo "Output:\n{$output}\n";
-
-if (file_exists($testThumbnail)) {
-    $size = filesize($testThumbnail);
-    echo "\n✅ SUCCESS! Thumbnail created: {$testThumbnail}\n";
-    echo "Size: " . round($size/1024, 2) . " KB\n";
-    
-    // Проверяем тип файла
-    $imageInfo = @getimagesize($testThumbnail);
-    if ($imageInfo) {
-        echo "Image type: " . image_type_to_mime_type($imageInfo[2]) . "\n";
-        echo "Dimensions: {$imageInfo[0]} x {$imageInfo[1]}\n";
-        
-        // Показываем первые байты
-        $handle = fopen($testThumbnail, 'rb');
-        $bytes = fread($handle, 20);
-        fclose($handle);
-        echo "First 20 bytes (hex): " . bin2hex($bytes) . "\n";
-        
-        // JPEG должен начинаться с FF D8 FF
-        if (bin2hex(substr($bytes, 0, 3)) === 'ffd8ff') {
-            echo "✅ Valid JPEG signature (FF D8 FF)\n";
-        } else {
-            echo "❌ Invalid JPEG signature\n";
-        }
-    } else {
-        echo "❌ Not a valid image file\n";
+    if ($info) {
+        echo "Размер: {$info[0]}x{$info[1]}, ", image_type_to_mime_type($info[2]), "\n";
     }
 } else {
-    echo "\n❌ FAILED! Thumbnail not created.\n";
-    
-    // Проверяем ошибки
-    if (strpos($output, 'Invalid data found') !== false) {
-        echo "Error: Invalid video file format\n";
-    } elseif (strpos($output, 'No such file or directory') !== false) {
-        echo "Error: File not found\n";
-    } elseif (strpos($output, 'Permission denied') !== false) {
-        echo "Error: Permission denied\n";
-    }
+    echo 'Путь к превью в БД: ', var_export($video->thumbnail, true), "\n";
 }

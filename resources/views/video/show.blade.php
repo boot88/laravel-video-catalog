@@ -3,7 +3,8 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">\n    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>{{ $video->title }} | Fashion Video</title>
     <style>
         * {
@@ -608,7 +609,7 @@
             <div class="fashion-video-player">
                 <div class="video-wrapper">
                     <video id="mainVideo" controls poster="{{ $video->thumbnail_url }}">
-                        <source src="{{ $video->video_url }}" type="video/mp4">
+                        <source src="{{ $video->video_url }}" type="{{ $video->mime_type }}">
                         Ваш браузер не поддерживает видео.
                     </video>
                 </div>
@@ -755,7 +756,8 @@
                         <div class="comment-header">
                             <div class="comment-author">
                                 <div class="author-avatar">
-                                    {{ substr($comment->username, 0, 1) }}
+                                    {{-- mb_substr, а не substr: substr режет многобайтовую кириллицу пополам и даёт «�» --}}
+                                    {{ mb_strtoupper(mb_substr((string) $comment->username, 0, 1)) }}
                                 </div>
                                 {{ $comment->username }}
                             </div>
@@ -781,15 +783,15 @@
         <div class="footer-container">
             <div class="footer-stats">
                 <div class="footer-stat">
-                    <div class="footer-stat-value">{{ \App\Models\Video::count() }}</div>
+                    <div class="footer-stat-value">{{ $stats['videos'] }}</div>
                     <div class="footer-stat-label">ВИДЕО</div>
                 </div>
                 <div class="footer-stat">
-                    <div class="footer-stat-value">{{ number_format(\App\Models\Video::sum('views')) }}</div>
+                    <div class="footer-stat-value">{{ number_format($stats['views']) }}</div>
                     <div class="footer-stat-label">ПРОСМОТРОВ</div>
                 </div>
                 <div class="footer-stat">
-                    <div class="footer-stat-value">{{ \App\Models\Comment::count() }}</div>
+                    <div class="footer-stat-value">{{ $stats['comments'] }}</div>
                     <div class="footer-stat-label">КОММЕНТАРИЕВ</div>
                 </div>
             </div>

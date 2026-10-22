@@ -424,23 +424,30 @@
             @endforeach
         </div>
         
+        @php
+            // Номер первого видео на текущей странице. Без смещения на 2-й странице
+            // бейджи снова начинались бы с #1 и «ТОП ВИДЕО #1» относился бы к 51-му видео.
+            $rankOffset = ($videos->currentPage() - 1) * $videos->perPage();
+        @endphp
+
         @if(isset($videos[0]))
-            <!-- Featured Video (самое популярное) -->
+            <!-- Featured Video (самое популярное на странице) -->
             <div class="featured-video">
-                <div class="featured-label">🔥 ТОП ВИДЕО #1</div>
-                <div class="video-card" data-slug="{{ $videos[0]->slug }}" data-video-url="{{ $videos[0]->video_url }}">
+                <div class="featured-label">
+                    {{ $rankOffset === 0 ? '🔥 ТОП ВИДЕО #1' : 'ВИДЕО #' . ($rankOffset + 1) }}
+                </div>
+                <div class="video-card" data-slug="{{ $videos[0]->slug }}">
                     <div class="video-thumbnail">
                         <div class="rating-badge">
-                            <span class="rating-number">#1</span>
+                            <span class="rating-number">#{{ $rankOffset + 1 }}</span>
                             <span class="rating-score">
-                                ({{ number_format($videos[0]->views + $videos[0]->comments()->count() + $videos[0]->likes) }})
+                                ({{ number_format($videos[0]->total_rating) }})
                             </span>
                         </div>
-                        <img src="{{ $videos[0]->thumbnail_url }}" alt="{{ $videos[0]->title }}">
+                        <img src="{{ $videos[0]->thumbnail_url }}" alt="{{ $videos[0]->title }}" loading="lazy" decoding="async">
                         <div class="video-player">
-                            <video muted preload="metadata" loop>
-                                <source src="{{ $videos[0]->video_preview_url ?? $videos[0]->video_url }}" type="video/mp4">
-                            </video>
+                            {{-- preload="none" + data-src: mp4 подгружается только при наведении, а не для всех 65 карточек сразу --}}
+                            <video muted loop playsinline preload="none" poster="{{ $videos[0]->thumbnail_url }}" data-src="{{ $videos[0]->video_url }}"></video>
                             <div class="video-loading" style="display: none;">
                                 <div class="spinner"></div>
                             </div>
@@ -457,8 +464,8 @@
                         </div>
                         <div class="video-stats">
                             <div class="stat">👁️ {{ number_format($videos[0]->views) }} просмотров</div>
-                            <div class="stat">💬 {{ $videos[0]->comments()->count() }} коммент.</div>
-                            <div class="stat">⭐ {{ number_format($videos[0]->views + $videos[0]->comments()->count() + $videos[0]->likes) }} рейтинг</div>
+                            <div class="stat">💬 {{ $videos[0]->comments_count }} коммент.</div>
+                            <div class="stat">⭐ {{ number_format($videos[0]->total_rating) }} рейтинг</div>
                         </div>
                     </div>
                 </div>
@@ -487,11 +494,14 @@
                     @foreach($floorVideos as $video)
                         @php
                             $globalIndex++;
-                            $totalRating = $video->views + $video->comments()->count() + $video->likes;
-                            $position = $globalIndex + 1; // +1 потому что первое видео в featured
+                            // comments_count уже загружен через withCount('comments')
+                            $totalRating = $video->total_rating;
+                            // $globalIndex считает и пропущенную карточку (она показана сверху
+                            // как featured), поэтому номер = смещение страницы + индекс.
+                            $position = $rankOffset + $globalIndex;
                         @endphp
                         @if($loop->parent->index >= 1 || $loop->index >= 1) <!-- Пропускаем первое видео первого этажа -->
-                            <div class="video-card" data-slug="{{ $video->slug }}" data-video-url="{{ $video->video_url }}">
+                            <div class="video-card" data-slug="{{ $video->slug }}">
                                 <div class="video-thumbnail">
                                     <div class="rating-badge">
                                         <span class="rating-number">
@@ -501,11 +511,10 @@
                                             ({{ number_format($totalRating) }})
                                         </span>
                                     </div>
-                                    <img src="{{ $video->thumbnail_url }}" alt="{{ $video->title }}">
+                                    <img src="{{ $video->thumbnail_url }}" alt="{{ $video->title }}" loading="lazy" decoding="async">
                                     <div class="video-player">
-                                        <video muted preload="metadata" loop>
-                                            <source src="{{ $video->video_preview_url ?? $video->video_url }}" type="video/mp4">
-                                        </video>
+                                        {{-- src подставляется при наведении (см. скрипт ниже) --}}
+                                        <video muted loop playsinline preload="none" poster="{{ $video->thumbnail_url }}" data-src="{{ $video->video_url }}"></video>
                                         <div class="video-loading" style="display: none;">
                                             <div class="spinner"></div>
                                         </div>
@@ -522,7 +531,7 @@
                                     </div>
                                     <div class="video-stats">
                                         <div class="stat">👁️ {{ number_format($video->views) }}</div>
-                                        <div class="stat">💬 {{ $video->comments()->count() }}</div>
+                                        <div class="stat">💬 {{ $video->comments_count }}</div>
                                         <div class="stat">⭐ {{ number_format($totalRating) }}</div>
                                     </div>
                                 </div>
@@ -537,18 +546,19 @@
         <div class="mobile-grid">
             @foreach($videos as $video)
                 @php
-                    $totalRating = $video->views + $video->comments()->count() + $video->likes;
+                    $totalRating = $video->total_rating;
+                    $rank = $rankOffset + $loop->iteration;
                 @endphp
                 @if(!$loop->first) <!-- Пропускаем первое видео (оно featured) -->
                     <div class="video-card" data-slug="{{ $video->slug }}">
                         <div class="video-thumbnail">
                             <div class="rating-badge">
-                                <span class="rating-number">#{{ $loop->iteration }}</span>
+                                <span class="rating-number">#{{ $rank }}</span>
                                 <span class="rating-score">
                                     ({{ number_format($totalRating) }})
                                 </span>
                             </div>
-                            <img src="{{ $video->thumbnail_url }}" alt="{{ $video->title }}">
+                            <img src="{{ $video->thumbnail_url }}" alt="{{ $video->title }}" loading="lazy" decoding="async">
                             <div class="play-overlay">
                                 <div class="play-icon">▶</div>
                             </div>
@@ -561,7 +571,7 @@
                             </div>
                             <div class="video-stats">
                                 <div class="stat">👁️ {{ number_format($video->views) }}</div>
-                                <div class="stat">💬 {{ $video->comments()->count() }}</div>
+                                <div class="stat">💬 {{ $video->comments_count }}</div>
                             </div>
                         </div>
                     </div>
@@ -571,19 +581,41 @@
         
         <!-- Pagination -->
         @if($videos->hasPages())
+            @php
+                $currentPage = $videos->currentPage();
+                $lastPage = $videos->lastPage();
+                // Показываем окно из 5 страниц вокруг текущей, а не всегда 1–5:
+                // раньше на 6-й странице не было ни активного пункта, ни ссылки вперёд.
+                $startPage = max(1, min($currentPage - 2, max(1, $lastPage - 4)));
+                $endPage = min($lastPage, $startPage + 4);
+            @endphp
             <div class="pagination">
                 @if($videos->onFirstPage())
                     <span class="page-link">← Назад</span>
                 @else
                     <a href="{{ $videos->previousPageUrl() }}" class="page-link">← Назад</a>
                 @endif
-                
-                @foreach(range(1, min(5, $videos->lastPage())) as $page)
-                    <a href="{{ $videos->url($page) }}" class="page-link {{ $videos->currentPage() == $page ? 'active' : '' }}">
-                        {{ $page }}
+
+                @if($startPage > 1)
+                    <a href="{{ $videos->url(1) }}" class="page-link">1</a>
+                    @if($startPage > 2)
+                        <span class="page-link page-dots">…</span>
+                    @endif
+                @endif
+
+                @foreach(range($startPage, $endPage) as $pageNumber)
+                    <a href="{{ $videos->url($pageNumber) }}" class="page-link {{ $currentPage == $pageNumber ? 'active' : '' }}">
+                        {{ $pageNumber }}
                     </a>
                 @endforeach
-                
+
+                @if($endPage < $lastPage)
+                    @if($endPage < $lastPage - 1)
+                        <span class="page-link page-dots">…</span>
+                    @endif
+                    <a href="{{ $videos->url($lastPage) }}" class="page-link">{{ $lastPage }}</a>
+                @endif
+
                 @if($videos->hasMorePages())
                     <a href="{{ $videos->nextPageUrl() }}" class="page-link">Вперед →</a>
                 @else
@@ -597,14 +629,16 @@
         // Обработка кликов по видео карточкам
         document.addEventListener('DOMContentLoaded', function() {
             const videoCards = document.querySelectorAll('.video-card');
+            // Сейчас играющее видео (чтобы одновременно не играло несколько)
+            let playingVideo = null;
             
             videoCards.forEach(card => {
                 const videoPlayer = card.querySelector('.video-player video');
                 const loadingElement = card.querySelector('.video-loading');
                 
                 if (videoPlayer) {
-                    // Предзагрузка видео
-                    videoPlayer.load();
+                    // Видео НЕ загружаем заранее: src подставляется только при наведении,
+                    // иначе при открытии главной скачивались бы все mp4 сразу.
                     
                     // Обработчики для автозапуска при наведении
                     let hoverTimer;
@@ -614,6 +648,19 @@
                         if (window.innerWidth > 768) { // Только на десктопе
                             hoverTimer = setTimeout(() => {
                                 if (loadingElement) loadingElement.style.display = 'flex';
+
+                                // src подставляем только сейчас — до этого mp4 не скачивается
+                                if (!videoPlayer.src && videoPlayer.dataset.src) {
+                                    videoPlayer.src = videoPlayer.dataset.src;
+                                    videoPlayer.load();
+                                }
+
+                                // Одновременно играет только одно видео
+                                if (playingVideo && playingVideo !== videoPlayer) {
+                                    playingVideo.pause();
+                                    playingVideo.currentTime = 0;
+                                }
+                                playingVideo = videoPlayer;
                                 
                                 videoPlayer.play().then(() => {
                                     isVideoPlaying = true;
@@ -634,6 +681,10 @@
                             videoPlayer.currentTime = 0;
                             isVideoPlaying = false;
                         }
+
+                        if (playingVideo === videoPlayer) {
+                            playingVideo = null;
+                        }
                         
                         if (loadingElement) loadingElement.style.display = 'none';
                     });
@@ -643,11 +694,11 @@
                         e.preventDefault();
                         const slug = this.getAttribute('data-slug');
                         if (slug) {
-                            // Остановить все видео перед переходом
-                            document.querySelectorAll('.video-player video').forEach(v => {
-                                v.pause();
-                                v.currentTime = 0;
-                            });
+                            // Остановить играющее видео перед переходом
+                            if (playingVideo) {
+                                playingVideo.pause();
+                                playingVideo.currentTime = 0;
+                            }
                             
                             window.location.href = '/video/' + slug;
                         }
@@ -657,11 +708,9 @@
             
             // Остановить все видео при уходе со страницы
             document.addEventListener('visibilitychange', function() {
-                if (document.hidden) {
-                    document.querySelectorAll('.video-player video').forEach(video => {
-                        video.pause();
-                        video.currentTime = 0;
-                    });
+                if (document.hidden && playingVideo) {
+                    playingVideo.pause();
+                    playingVideo.currentTime = 0;
                 }
             });
             
@@ -670,14 +719,15 @@
             window.addEventListener('scroll', function() {
                 clearTimeout(scrollTimer);
                 scrollTimer = setTimeout(() => {
-                    document.querySelectorAll('.video-player video').forEach(video => {
-                        const rect = video.getBoundingClientRect();
-                        // Если видео не в видимой области экрана
-                        if (rect.bottom < 0 || rect.top > window.innerHeight) {
-                            video.pause();
-                            video.currentTime = 0;
-                        }
-                    });
+                    // Проверяем только играющее видео, а не все 65 элементов на каждом скролле
+                    if (!playingVideo) return;
+
+                    const rect = playingVideo.getBoundingClientRect();
+                    // Если видео не в видимой области экрана
+                    if (rect.bottom < 0 || rect.top > window.innerHeight) {
+                        playingVideo.pause();
+                        playingVideo.currentTime = 0;
+                    }
                 }, 100);
             });
         });
