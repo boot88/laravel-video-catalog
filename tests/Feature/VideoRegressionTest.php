@@ -145,13 +145,13 @@ class VideoRegressionTest extends TestCase
         }
 
         // 80 видео по 10 на страницу = 8 страниц; проверяем пятую.
-        $response = $this->get('/?per_page=10&page=5')->assertOk();
+        $response = $this->get('/videos?per_page=10&page=5')->assertOk();
         $html = $response->getContent();
 
-        // Раньше всегда выводились ссылки 1–5, поэтому 7 и 8 отсутствовали.
+        // Окно пагинации должно тянуться за текущей страницей, а не всегда быть 1–5.
         $this->assertStringContainsString('page=7', $html);
         $this->assertStringContainsString('page=8', $html);
-        $this->assertMatchesRegularExpression('/class="page-link active">\s*5\s*</u', $html);
+        $this->assertMatchesRegularExpression('/class="pagination__link is-active"[^>]*>\s*5\s*</u', $html);
     }
 
     public function test_quality_label_uses_smaller_side_and_does_not_call_1920_square_4k(): void

@@ -72,9 +72,9 @@ class GenerateVideoThumbnails extends Command
 
         $second = $this->option('second') !== null
             ? (int) $this->option('second')
-            : (int) config('ffmpeg.thumbnail_second', 10);
+            : null;
 
-        $this->info("Видео к обработке: {$videos->count()} (кадр с {$second}-й секунды)");
+        $this->info("Видео к обработке: {$videos->count()} (секунда кадра: thumbnail_time видео или конфиг)");
 
         $bar = $this->output->createProgressBar($videos->count());
         $bar->start();

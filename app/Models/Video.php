@@ -5,6 +5,8 @@ namespace App\Models;
 use App\Services\VideoThumbnailService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Query\Expression;
 use Illuminate\Support\Facades\DB;
@@ -14,9 +16,25 @@ class Video extends Model
     protected $fillable = [
         'title', 'slug', 'description', 'filename', 'thumbnail',
         'duration', 'format', 'quality', 'views', 'likes', 'rating', 'featured', 'category',
+        'category_id', 'brand_id', 'collection_id', 'status', 'published_at', 'credits',
+        'width', 'height', 'preview', 'thumbnail_time',
     ];
 
-    protected $appends = ['comments_count', 'thumbnail_url', 'formatted_duration', 'total_rating'];
+    protected $casts = [
+        'featured' => 'boolean',
+        'published_at' => 'datetime',
+        'width' => 'integer',
+        'height' => 'integer',
+        'thumbnail_time' => 'integer',
+        'views' => 'integer',
+        'likes' => 'integer',
+        'rating' => 'integer',
+    ];
+
+    protected $appends = [
+        'comments_count', 'thumbnail_url', 'formatted_duration', 'total_rating',
+        'video_url', 'has_video', 'preview_url', 'aspect_ratio', 'orientation',
+    ];
 
     /**
      * Мемоизация количества комментариев на время жизни инстанса модели.
@@ -28,9 +46,48 @@ class Video extends Model
     /** Мемоизация проверок существования видеофайла (одна на файл за запрос). */
     private static array $fileExistsCache = [];
 
+    public function getRouteKeyName(): string
+    {
+        return 'slug';
+    }
+
     public function comments(): HasMany
     {
         return $this->hasMany(Comment::class);
+    }
+
+    /**
+     * Отношение называется categoryInfo, потому что колонка category уже
+     * содержит строковый slug для обратной совместимости с импортом.
+     */
+    public function categoryInfo(): BelongsTo
+    {
+        return $this->belongsTo(Category::class, 'category_id');
+    }
+
+    public function brand(): BelongsTo
+    {
+        return $this->belongsTo(Brand::class);
+    }
+
+    public function collection(): BelongsTo
+    {
+        return $this->belongsTo(FashionCollection::class, 'collection_id');
+    }
+
+    public function models(): BelongsToMany
+    {
+        return $this->belongsToMany(ModelProfile::class, 'model_video', 'video_id', 'model_id');
+    }
+
+    public function tags(): BelongsToMany
+    {
+        return $this->belongsToMany(Tag::class, 'tag_video');
+    }
+
+    public function viewEvents(): HasMany
+    {
+        return $this->hasMany(ViewEvent::class);
     }
 
     /** После refresh() закешированный счётчик комментариев должен быть сброшен. */
@@ -76,18 +133,102 @@ class Video extends Model
 
     public function getVideoUrlAttribute(): string
     {
-        // Проверяем существует ли файл (результат мемоизируется на время запроса)
+        // Проверяем существует ли файл (результат мемоизируется на время запроса).
+        // Второй путь — публичные демо/архивные ролики, которые попадают в git,
+        // тогда как storage/app/public в репозиторий не коммитится.
         $filename = (string) $this->filename;
 
-        $exists = self::$fileExistsCache[$filename]
-            ??= file_exists(storage_path('app/public/videos/'.$filename));
+        $path = self::$fileExistsCache[$filename] ??= match (true) {
+            is_file(storage_path('app/public/videos/'.$filename)) => 'storage/videos/'.$filename,
+            is_file(public_path('media/videos/'.$filename)) => 'media/videos/'.$filename,
+            default => '',
+        };
 
-        if (! $exists) {
-            // Создаем заглушку если файла нет
-            return $this->createDummyVideoUrl();
+        return $path === '' ? '' : asset($path);
+    }
+
+    public function getHasVideoAttribute(): bool
+    {
+        return $this->video_url !== '';
+    }
+
+    public function getPreviewUrlAttribute(): string
+    {
+        if ($this->preview) {
+            $path = ltrim((string) $this->preview, '/');
+
+            if (is_file(storage_path('app/public/'.$path))) {
+                return asset('storage/'.$path);
+            }
+
+            if (is_file(public_path($path))) {
+                return asset($path);
+            }
+
+            if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://')) {
+                return $path;
+            }
         }
 
-        return asset('storage/videos/'.$filename);
+        // Превью генерируются командой videos:generate-previews и называются
+        // так же, как исходный ролик. Это позволяет переиспользовать один
+        // превью-файл для нескольких записей с общим filename.
+        $filename = (string) $this->filename;
+
+        foreach (['storage/previews/'.$filename, 'media/previews/'.$filename] as $candidate) {
+            if (is_file(public_path($candidate))) {
+                return asset($candidate);
+            }
+        }
+
+        $storagePath = storage_path('app/public/previews/'.$filename);
+
+        return is_file($storagePath) ? asset('storage/previews/'.$filename) : '';
+    }
+
+    public function getAspectRatioAttribute(): string
+    {
+        $width = (int) $this->width;
+        $height = (int) $this->height;
+
+        if ($width <= 0 || $height <= 0) {
+            return '16 / 9';
+        }
+
+        $gcd = static function (int $a, int $b) use (&$gcd): int {
+            return $b === 0 ? $a : $gcd($b, $a % $b);
+        };
+
+        $divisor = max(1, $gcd($width, $height));
+
+        return intdiv($width, $divisor).' / '.intdiv($height, $divisor);
+    }
+
+    public function getOrientationAttribute(): string
+    {
+        $width = (int) $this->width;
+        $height = (int) $this->height;
+
+        if ($width <= 0 || $height <= 0) {
+            return 'landscape';
+        }
+
+        if ($height > $width * 1.1) {
+            return 'portrait';
+        }
+
+        return abs($width - $height) < max($width, $height) * 0.1 ? 'square' : 'landscape';
+    }
+
+    public function getPublishedLabelAttribute(): string
+    {
+        return $this->published_at?->translatedFormat('j F Y') ?? '';
+    }
+
+    public function getIsPublishedAttribute(): bool
+    {
+        return $this->status === 'published'
+            && ($this->published_at === null || $this->published_at->isPast());
     }
 
     /**
@@ -110,12 +251,6 @@ class Video extends Model
         };
     }
 
-    private function createDummyVideoUrl(): string
-    {
-        // Возвращаем тестовое видео
-        return 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
-    }
-
     public function getFormattedDurationAttribute(): string
     {
         $duration = max(0, (int) $this->duration);
@@ -130,6 +265,38 @@ class Video extends Model
      * вместо ORDER BY (views + comments_count + likes), который заставлял SQLite/
      * MySQL сортировать всю таблицу без индекса.
      */
+    public function scopePublished(Builder $query): Builder
+    {
+        $model = $query->getModel();
+
+        return $query->where($model->qualifyColumn('status'), 'published')
+            ->where(function (Builder $query) use ($model): void {
+                $query->whereNull($model->qualifyColumn('published_at'))
+                    ->orWhere($model->qualifyColumn('published_at'), '<=', now());
+            });
+    }
+
+    public function scopeNewest(Builder $query): Builder
+    {
+        return $query->orderByDesc('published_at')->orderByDesc('id');
+    }
+
+    public function scopeOldest(Builder $query): Builder
+    {
+        return $query->orderBy('published_at')->orderBy('id');
+    }
+
+    public function scopeTrending(Builder $query): Builder
+    {
+        return $query
+            ->withCount(['viewEvents as recent_views_count' => function (Builder $query): void {
+                $query->where('created_at', '>=', now()->subDays(7));
+            }])
+            ->orderByDesc('recent_views_count')
+            ->orderByDesc('rating')
+            ->orderByDesc('views');
+    }
+
     public function scopeRanked(Builder $query): Builder
     {
         return $query->orderByDesc('rating')
@@ -244,7 +411,7 @@ class Video extends Model
         $table = $this->getTable();
 
         return DB::raw(sprintf(
-            'views + %d + likes + %d + (select count(*) from comments where comments.video_id = %s.id)',
+            "views + %d + likes + %d + (select count(*) from comments where comments.video_id = %s.id and comments.status = 'approved')",
             $viewsIncrement,
             $likesIncrement,
             $table

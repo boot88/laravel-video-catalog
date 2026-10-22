@@ -2,10 +2,16 @@
 
 namespace App\Console\Commands;
 
+use App\Models\Brand;
+use App\Models\Category;
+use App\Models\FashionCollection;
+use App\Models\ModelProfile;
+use App\Models\Tag;
 use App\Models\Video;
 use App\Services\VideoProbeService;
 use App\Services\VideoThumbnailService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 
@@ -30,6 +36,7 @@ class ImportVideos extends Command
                             {--force : Перезаписать уже добавленные (совпадение по имени файла)}
                             {--copy : Копировать файлы, оставляя оригиналы (по умолчанию файлы переносятся в storage)}
                             {--views=0 : Стартовые просмотры (влияют на позицию на главной: рейтинг = views + likes + комментарии)}
+                            {--metadata= : JSON-файл метаданных (по умолчанию metadata.json в папке)}
                             {--skip-thumbnails : Не создавать превью (потом: php artisan videos:generate-thumbnails)}';
 
     protected $description = 'Импорт видео из папки в базу: положил файлы в public/images/import/<категория> и запустил команду';
@@ -78,6 +85,7 @@ class ImportVideos extends Command
 
         foreach ($folders as [$path, $category]) {
             $files = $this->videoFiles($path);
+            $metadata = $this->loadMetadata($path);
 
             if ($files === []) {
                 $this->line('В папке '.basename($path).' нет видеофайлов ('.implode(', ', self::EXTENSIONS).').');
@@ -96,11 +104,15 @@ class ImportVideos extends Command
 
                 $originalName = basename($sourcePath);
                 $ext = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
-                $title = $this->makeTitle($originalName);
+                $data = $this->metadataFor($metadata, $originalName);
+                $categoryName = trim((string) ($data['category'] ?? $category));
+                $categoryName = $categoryName !== '' ? $categoryName : $category;
+                $title = trim((string) ($data['title'] ?? '')) ?: $this->makeTitle($originalName);
+
                 // Имя файла — идентификатор видео в базе. Учитываем категорию:
                 // одинаковые имена в разных папках (частый случай при раскладке
                 // одного ролика по категориям) не должны «съедать» друг друга.
-                $storedFilename = $this->storedFilename($originalName, $category);
+                $storedFilename = $this->storedFilename($originalName, $categoryName);
 
                 // Проверяем до ffprobe: повторный запуск импорта не должен
                 // запускать внешний процесс для каждого уже импортированного файла.
@@ -156,21 +168,38 @@ class ImportVideos extends Command
                 $video = $existing ?? new Video;
                 $video->filename = $storedFilename;
                 $video->title = $title;
-                $video->description = 'Видео «'.$title.'» из категории «'.$category.'».';
+                $video->description = (string) ($data['description'] ?? 'Видео «'.$title.'» из категории «'.$categoryName.'».');
                 $video->duration = $duration;
                 $video->format = strtoupper($ext);
                 $video->quality = $quality;
-                $video->category = $category;
+                $video->width = (int) ($meta['width'] ?? 0) ?: null;
+                $video->height = (int) ($meta['height'] ?? 0) ?: null;
+                $video->credits = isset($data['credits']) ? (string) $data['credits'] : $video->credits;
+                $video->thumbnail_time = isset($data['thumbnail_at']) ? max(0, (int) $data['thumbnail_at']) : $video->thumbnail_time;
+                $video->status = in_array(($data['status'] ?? 'published'), ['published', 'draft'], true)
+                    ? ($data['status'] ?? 'published')
+                    : 'published';
+
+                if (! empty($data['published_at'])) {
+                    try {
+                        $video->published_at = Carbon::parse((string) $data['published_at']);
+                    } catch (\Throwable) {
+                        $video->published_at = $video->published_at ?? now();
+                    }
+                } elseif (! $video->exists) {
+                    $video->published_at = now();
+                }
 
                 if (! $video->exists) {
                     $video->slug = $this->uniqueSlug($title);
                     $video->views = $views;
                     $video->likes = 0;
                     $video->rating = $views;
-                    $video->featured = false;
+                    $video->featured = (bool) ($data['featured'] ?? false);
                 }
 
                 $video->save();
+                $this->syncTaxonomy($video, $data, $categoryName);
 
                 if ($withThumbnails && (! $video->thumbnail || $force)) {
                     VideoThumbnailService::generateThumbnail($video);
@@ -213,6 +242,190 @@ class ImportVideos extends Command
         }
 
         return $errors > 0 ? self::FAILURE : self::SUCCESS;
+    }
+
+    /** @return array<string, array<string, mixed>> */
+    private function loadMetadata(string $folder): array
+    {
+        $option = trim((string) $this->option('metadata'));
+        $candidates = [];
+
+        if ($option !== '') {
+            $candidates[] = $option;
+            $candidates[] = base_path($option);
+            $candidates[] = public_path($option);
+        }
+
+        $candidates[] = rtrim($folder, '/\\').DIRECTORY_SEPARATOR.'metadata.json';
+
+        foreach ($candidates as $file) {
+            if (! is_file($file)) {
+                continue;
+            }
+
+            $decoded = json_decode((string) file_get_contents($file), true);
+
+            if (! is_array($decoded)) {
+                $this->warn('  metadata: не удалось прочитать JSON '.$file);
+
+                return [];
+            }
+
+            if (array_is_list($decoded)) {
+                $keyed = [];
+
+                foreach ($decoded as $item) {
+                    if (is_array($item) && isset($item['filename'])) {
+                        $keyed[(string) $item['filename']] = $item;
+                    }
+                }
+
+                return $keyed;
+            }
+
+            return $decoded;
+        }
+
+        return [];
+    }
+
+    /** @param array<string, array<string, mixed>> $metadata */
+    private function metadataFor(array $metadata, string $filename): array
+    {
+        $keys = [
+            $filename,
+            pathinfo($filename, PATHINFO_FILENAME),
+            '*',
+            '__default',
+        ];
+
+        foreach ($keys as $key) {
+            if (isset($metadata[$key]) && is_array($metadata[$key])) {
+                return $metadata[$key];
+            }
+        }
+
+        return [];
+    }
+
+    /** @param array<string, mixed> $data */
+    private function syncTaxonomy(Video $video, array $data, string $categoryName): void
+    {
+        $categoryName = trim($categoryName) ?: 'import';
+        $categorySlug = Str::slug($categoryName) ?: 'import';
+
+        $category = Category::query()
+            ->where('slug', $categorySlug)
+            ->orWhere('name', $categoryName)
+            ->first()
+            ?? Category::query()->create([
+                'slug' => $categorySlug,
+                'name' => Str::headline($categoryName),
+                'description' => $data['category_description'] ?? null,
+                'is_visible' => true,
+            ]);
+
+        $video->category = $category->slug;
+        $video->category_id = $category->id;
+
+        $brandName = trim((string) ($data['brand'] ?? ''));
+        $brand = null;
+
+        if ($brandName !== '') {
+            $brand = Brand::query()
+                ->where('slug', Str::slug($brandName) ?: 'brand')
+                ->orWhere('name', $brandName)
+                ->first()
+                ?? Brand::query()->create([
+                    'slug' => Str::slug($brandName) ?: 'brand',
+                    'name' => $brandName,
+                    'country' => $data['brand_country'] ?? null,
+                    'description' => $data['brand_description'] ?? null,
+                    'is_visible' => true,
+                ]);
+
+            $video->brand_id = $brand->id;
+        }
+
+        $collectionTitle = trim((string) ($data['collection'] ?? ''));
+
+        if ($collectionTitle !== '') {
+            $collection = FashionCollection::query()
+                ->where('slug', Str::slug($collectionTitle) ?: 'collection')
+                ->orWhere('title', $collectionTitle)
+                ->first()
+                ?? FashionCollection::query()->create([
+                    'slug' => Str::slug($collectionTitle) ?: 'collection',
+                    'brand_id' => $brand?->id,
+                    'title' => $collectionTitle,
+                    'season' => $data['season'] ?? null,
+                    'city' => $data['city'] ?? null,
+                    'event_date' => $data['event_date'] ?? null,
+                    'description' => $data['collection_description'] ?? null,
+                    'is_visible' => true,
+                ]);
+
+            $video->collection_id = $collection->id;
+        }
+
+        $video->save();
+
+        if (! empty($data['models'])) {
+            $names = is_array($data['models']) ? $data['models'] : [$data['models']];
+            $ids = [];
+
+            foreach ($names as $name) {
+                $name = trim((string) $name);
+
+                if ($name === '') {
+                    continue;
+                }
+
+                $profile = ModelProfile::query()
+                    ->where('slug', Str::slug($name) ?: 'model')
+                    ->orWhere('name', $name)
+                    ->first()
+                    ?? ModelProfile::query()->create([
+                        'slug' => Str::slug($name) ?: 'model',
+                        'name' => $name,
+                        'is_visible' => true,
+                    ]);
+
+                $ids[] = $profile->id;
+            }
+
+            if ($ids !== []) {
+                $video->models()->sync(array_values(array_unique($ids)));
+            }
+        }
+
+        if (! empty($data['tags'])) {
+            $tags = is_array($data['tags']) ? $data['tags'] : [$data['tags']];
+            $ids = [];
+
+            foreach ($tags as $name) {
+                $name = trim((string) $name);
+
+                if ($name === '') {
+                    continue;
+                }
+
+                $tag = Tag::query()
+                    ->where('slug', Str::slug($name) ?: 'tag')
+                    ->orWhere('name', $name)
+                    ->first()
+                    ?? Tag::query()->create([
+                        'slug' => Str::slug($name) ?: 'tag',
+                        'name' => $name,
+                    ]);
+
+                $ids[] = $tag->id;
+            }
+
+            if ($ids !== []) {
+                $video->tags()->sync(array_values(array_unique($ids)));
+            }
+        }
     }
 
     /**

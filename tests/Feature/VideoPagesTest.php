@@ -7,9 +7,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 /**
- * Страницы списка/показа: нумерация карточек, per_page и MIME-тип источника.
- * Тесты работают только с БД (файлы и превью не создаются), поэтому реальный
- * storage не затрагивается.
+ * Публичные страницы: редакционная главная, каталог, пагинация и SEO-разметка.
  */
 class VideoPagesTest extends TestCase
 {
@@ -17,7 +15,7 @@ class VideoPagesTest extends TestCase
 
     private function seedVideos(int $count): void
     {
-        for ($i = 1; $i <= $count; $i++) {
+        foreach (range(1, $count) as $i) {
             Video::query()->create([
                 'title' => 'Видео '.$i,
                 'slug' => 'video-'.$i,
@@ -26,52 +24,67 @@ class VideoPagesTest extends TestCase
                 'views' => 1000 - $i,
                 'likes' => 0,
                 'category' => 'blondinki',
+                'published_at' => now()->subMinutes($count - $i),
             ]);
         }
     }
 
-    /** @return string[] номера бейджей рейтинга (#1, #2, ...) в порядке появления в HTML */
-    private function rankBadges(string $html): array
+    public function test_homepage_uses_featured_video_for_hero_and_shows_new_section(): void
     {
-        preg_match_all('/rating-number">\s*([^<]*)</', $html, $matches);
+        $this->seedVideos(30);
 
-        // В бейдже топ-3 есть префикс «🔥 », для сравнения оставляем только номер.
-        return array_map(static function (string $badge): string {
-            preg_match('/#\d+/', $badge, $number);
+        $featured = Video::query()->create([
+            'title' => 'Главный показ',
+            'slug' => 'glavnyi-pokaz',
+            'filename' => 'hero.mp4',
+            'duration' => 90,
+            'views' => 10,
+            'likes' => 1,
+            'category' => 'runway',
+            'featured' => true,
+            'published_at' => now()->subDay(),
+        ]);
 
-            return $number[0] ?? trim($badge);
-        }, $matches[1]);
+        $response = $this->get('/')->assertOk();
+
+        $response->assertSee($featured->title);
+        $response->assertSee('Главный показ');
+        $response->assertSee('Новое');
+        $response->assertSee('Сейчас смотрят');
+        $response->assertSee('Fashion Video Hub');
     }
 
-    public function test_rank_badges_start_from_two_and_continue_across_pages(): void
+    public function test_invalid_per_page_falls_back_to_default_catalog_page(): void
     {
         $this->seedVideos(60);
 
-        $firstPage = $this->get('/')->assertOk();
-        $badges = $this->rankBadges($firstPage->getContent());
+        $response = $this->get('/videos?per_page=abc')->assertOk();
+        $html = $response->getContent();
 
-        // $badges[0] — featured-карточка (видео #1), значит первая карточка сетки
-        // должна быть #2, а не #3 (раньше номер считался с лишним +1).
-        $this->assertSame('#1', $badges[0]);
-        $this->assertSame('#2', $badges[1]);
-        $this->assertSame('#50', end($badges));
-
-        $secondPage = $this->get('/?page=2')->assertOk();
-        $secondPage->assertSee('ВИДЕО #51');
-
-        // Нумерация продолжается, а не начинается заново с #1.
-        $this->assertSame('#51', $this->rankBadges($secondPage->getContent())[0]);
-        $this->assertSame('#52', $this->rankBadges($secondPage->getContent())[1]);
+        $this->assertSame(24, substr_count($html, 'data-video-card'));
+        $this->assertStringContainsString('Видео 60', $html);
     }
 
-    public function test_invalid_per_page_falls_back_to_default(): void
+    public function test_catalog_pagination_continues_on_second_page(): void
     {
         $this->seedVideos(60);
 
-        // 50 видео на странице: 1 featured + 49 в сетке + 49 в мобильной сетке
-        $response = $this->get('/?per_page=abc')->assertOk();
+        $secondPage = $this->get('/videos?per_page=10&page=2')->assertOk();
 
-        $this->assertSame(99, substr_count($response->getContent(), 'class="video-card"'));
+        $secondPage->assertSee('Видео 50');
+        $secondPage->assertDontSee('Видео 60');
+        $secondPage->assertSee('page=3', false);
+    }
+
+    public function test_aspect_ratio_and_orientation_support_vertical_video(): void
+    {
+        $vertical = new Video(['width' => 1080, 'height' => 1920]);
+        $landscape = new Video(['width' => 1920, 'height' => 1080]);
+
+        $this->assertSame('9 / 16', $vertical->aspect_ratio);
+        $this->assertSame('portrait', $vertical->orientation);
+        $this->assertSame('16 / 9', $landscape->aspect_ratio);
+        $this->assertSame('landscape', $landscape->orientation);
     }
 
     public function test_source_mime_type_follows_file_extension(): void
@@ -89,5 +102,38 @@ class VideoPagesTest extends TestCase
 
             $this->assertSame($expected, $video->mime_type, $filename);
         }
+    }
+
+    public function test_video_page_contains_seo_and_videoobject_schema(): void
+    {
+        $video = Video::query()->create([
+            'title' => 'SEO показ',
+            'slug' => 'seo-pokaz',
+            'filename' => 'seo.mp4',
+            'description' => 'Описание для поисковых систем',
+            'duration' => 75,
+            'views' => 12,
+            'likes' => 2,
+            'category' => 'runway',
+            'published_at' => now()->subDay(),
+        ]);
+
+        $response = $this->get('/video/'.$video->slug)->assertOk();
+
+        $response->assertSee('<meta name="description" content="Описание для поисковых систем">', false);
+        $response->assertSee('application/ld+json', false);
+        $response->assertSee('"@type": "VideoObject"', false);
+        $response->assertSee('rel="canonical"', false);
+    }
+
+    public function test_homepage_does_not_load_full_video_sources(): void
+    {
+        $this->seedVideos(5);
+
+        $html = $this->get('/')->assertOk()->getContent();
+
+        $this->assertStringNotContainsString('data:image/svg+xml;base64', $html);
+        $this->assertStringNotContainsString('<source src=', $html);
+        $this->assertStringContainsString('loading="lazy"', $html);
     }
 }

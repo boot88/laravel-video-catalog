@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Video;
+use App\Support\Media;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Symfony\Component\Process\Process;
@@ -21,7 +22,7 @@ class VideoThumbnailService
             // Пытаемся создать превью из видео
             return self::createVideoThumbnail(
                 $video,
-                $second ?? (int) config('ffmpeg.thumbnail_second', 10)
+                $second ?? $video->thumbnail_time ?? (int) config('ffmpeg.thumbnail_second', 10)
             );
         } catch (\Throwable $e) {
             Log::error('Video thumbnail generation failed: '.$e->getMessage());
@@ -83,9 +84,9 @@ class VideoThumbnailService
 
     private static function createVideoThumbnail(Video $video, int $second = 10): bool
     {
-        $videoPath = storage_path('app/public/videos/'.$video->filename);
+        $videoPath = Media::videoPath((string) $video->filename);
 
-        if (! is_file($videoPath)) {
+        if ($videoPath === null) {
             throw new \RuntimeException('Video file not found: '.$video->filename);
         }
 
@@ -348,8 +349,16 @@ class VideoThumbnailService
      */
     public static function getThumbnailUrl(?string $thumbnailPath, ?string $seed = null): string
     {
-        if ($thumbnailPath && self::thumbnailExists($thumbnailPath)) {
-            return asset('storage/'.$thumbnailPath);
+        if ($thumbnailPath) {
+            if (self::thumbnailExists($thumbnailPath)) {
+                return asset('storage/'.$thumbnailPath);
+            }
+
+            // Демо-постеры лежат в public/media и коммитятся в git, поэтому
+            // остаются доступны даже без storage:link и запуска ffmpeg.
+            if (is_file(public_path($thumbnailPath))) {
+                return asset($thumbnailPath);
+            }
         }
 
         $seed = preg_replace('/[^A-Za-z0-9_-]/', '', (string) ($seed ?? '0')) ?: '0';

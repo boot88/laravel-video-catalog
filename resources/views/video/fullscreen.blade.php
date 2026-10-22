@@ -49,15 +49,43 @@
         .back-btn:hover {
             background: rgba(255, 255, 255, 0.2);
         }
+
+        .fullscreen-empty {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #f4f0ea;
+            text-align: center;
+        }
+
+        .fullscreen-empty h1 {
+            font-family: Georgia, serif;
+            font-weight: 400;
+        }
+
+        .fullscreen-empty a {
+            color: #d8ff5f;
+        }
     </style>
 </head>
 <body>
     <div class="fullscreen-player">
         <button class="back-btn" onclick="window.history.back()">← Назад</button>
-        <video id="fullscreenVideo" controls autoplay>
-            <source src="{{ $video->video_url }}" type="{{ $video->mime_type }}">
-            Ваш браузер не поддерживает видео.
-        </video>
+        @if ($video->has_video)
+            <video id="fullscreenVideo" controls autoplay playsinline poster="{{ $video->thumbnail_url }}">
+                <source src="{{ $video->video_url }}" type="{{ $video->mime_type }}">
+                Ваш браузер не поддерживает видео.
+            </video>
+        @else
+            <div class="fullscreen-empty">
+                <h1>{{ $video->title }}</h1>
+                <p>Видеофайл ещё не загружен.</p>
+                <a href="{{ route('video.show', $video) }}">Вернуться на страницу видео</a>
+            </div>
+        @endif
     </div>
     
     <script>
