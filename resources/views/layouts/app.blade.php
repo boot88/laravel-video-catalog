@@ -22,9 +22,8 @@
     <meta name="twitter:description" content="@yield('meta_description', config('site.description'))">
     <meta name="twitter:image" content="@yield('og_image', asset('media/models/model-07.webp'))">
 
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:opsz,wght@6..96,400;6..96,500;6..96,600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    {{-- Шрифты подключены локально в resources/css/app.css (public/fonts):
+         внешний запрос к Google Fonts блокировал первую отрисовку. --}}
     <link rel="icon" href="{{ asset('favicon.ico') }}" sizes="any">
 
     @if (file_exists(public_path('build/manifest.json')) || file_exists(public_path('hot')))
